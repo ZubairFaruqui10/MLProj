@@ -18,8 +18,8 @@ transform = transforms.Compose([
 ])
 
 # Load the datasets
-train_dataset = datasets.ImageFolder(root='/Users/zubairfaruqui/Downloads/CNN Data/Training Dataset', transform=transform)
-test_dataset = datasets.ImageFolder(root='/Users/zubairfaruqui/Downloads/CNN Data/Test Dataset', transform=transform)
+train_dataset = datasets.ImageFolder(root='/home/zubair/Downloads/CNN Data/Training Dataset', transform=transform)
+test_dataset = datasets.ImageFolder(root='/home/zubair/Downloads/CNN Data/Test Dataset', transform=transform)
 
 # DataLoader (to handle batch processing)
 train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)

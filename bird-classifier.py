@@ -1,138 +1,228 @@
-#!/usr/bin/env python
 
-import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
-import random
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Activation
-from tensorflow.keras.utils import to_categorical
+import numpy as np
 
-# Load local images from directory
-train_dir = "/Users/zubairfaruqui/Downloads/CNN Data/Training Dataset"  # Specify the path to the training folder
-test_dir = "/Users/zubairfaruqui/Downloads/CNN Data/Test Dataset"    # Specify the path to the testing folder
+# Check if CUDA is available, set the device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f'Using device: {device}')  # Prints 'cuda' if GPU is available, else 'cpu'
 
-batch_size = 32
-img_size = (960, 480)  # MNIST-like images
+# Hyperparameters
+batch_size = 16
+learning_rate = 0.001
+num_epochs = 10
+image_size = (960, 480)  # Image size
 
-# Load train and test datasets from the directories, in grayscale mode
-train_dataset = tf.keras.utils.image_dataset_from_directory(
-    train_dir,
-    image_size=img_size,  # Images resized to match the MNIST dimensions
-    batch_size=batch_size,
-    color_mode='grayscale',  # Load as grayscale images
-    label_mode='int'  # Labels will be integers corresponding to folder names
-)
+# Define the transformations (resize, normalize, convert to tensor)
+transform = transforms.Compose([
+    transforms.Resize(image_size),  # Resize images to 960x480 pixels
+    transforms.ToTensor(),  # Convert the image to PyTorch tensor
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # Normalize the image between -1 and 1
+])
 
-test_dataset = tf.keras.utils.image_dataset_from_directory(
-    test_dir,
-    image_size=img_size,
-    batch_size=batch_size,
-    color_mode='grayscale',  # Load as grayscale images
-    label_mode='int'
-)
+# Load the datasets
+train_dataset = datasets.ImageFolder(root='/home/zubair/Downloads/CNN Data/Training Dataset', transform=transform)
+test_dataset = datasets.ImageFolder(root='/home/zubair/Downloads/CNN Data/Test Dataset', transform=transform)
 
-# Convert datasets to NumPy arrays for use with the rest of the code
-def dataset_to_numpy(dataset):
-    images = []
-    labels = []
-    for image_batch, label_batch in dataset:
-        images.append(image_batch.numpy())
-        labels.append(label_batch.numpy())
-    return np.concatenate(images), np.concatenate(labels)
+# DataLoader (to handle batch processing)
+train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
 
-X_train, y_train = dataset_to_numpy(train_dataset)
-X_test, y_test = dataset_to_numpy(test_dataset)
 
-# Normalize images (convert from range [0, 255] to [0, 1])
-X_train = X_train / 255.0
-X_test = X_test / 255.0
+# Define the CNN model for larger input size
+class SimpleCNN(nn.Module):
+    def __init__(self):
+        super(SimpleCNN, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1, device=device)
+        self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1, device=device)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
 
-# Check shapes
-print("X_train shape", X_train.shape)
-print("y_train shape", y_train.shape)
-print("X_test shape", X_test.shape)
-print("y_test shape", y_test.shape)
+        # Calculate the size of the flattened output after conv + pooling
+        conv_output_size = self._get_conv_output_size(image_size)
 
-# Show some sample images
-for i in range(9):
-    plt.subplot(3, 3, i + 1)
-    num = random.randint(0, len(X_train))
-    plt.imshow(X_train[num].squeeze(), cmap='gray', interpolation='none')  # Use .squeeze() to remove single channel dimension
-    plt.title("Class {}".format(y_train[num]))
+        self.fc1 = nn.Linear(conv_output_size, 128)  # Adjusted fully connected layer
+        self.fc2 = nn.Linear(128, len(train_dataset.classes))  # Output layer for the number of classes
 
-plt.tight_layout()
+    def forward(self, x):
+        x = self.pool(torch.relu(self.conv1(x)))  # Conv1 + ReLU + MaxPool
+        x = self.pool(torch.relu(self.conv2(x)))  # Conv2 + ReLU + MaxPool
+        x = x.view(x.size(0), -1)  # Flatten the tensor
+        x = torch.relu(self.fc1(x))  # Fully connected layer 1
+        x = self.fc2(x)  # Output layer
+        return x
 
-# Flatten the images from (28, 28, 1) to (784) for the neural network
-X_train = X_train.reshape(X_train.shape[0], 960 * 480)
-X_test = X_test.reshape(X_test.shape[0], 960 * 480)
+    def _get_conv_output_size(self, img_size):
+        """Helper function to calculate the size of the tensor after conv + pool."""
+        with torch.no_grad():
+            dummy_input = torch.ones(1, 3, *img_size).to(device)  # Move dummy input to the GPU/CPU
+            x = self.pool(torch.relu(self.conv1(dummy_input)))  # Conv1 + Pool
+            x = self.pool(torch.relu(self.conv2(x)))  # Conv2 + Pool
+            return x.numel()
 
-# Convert labels to categorical (one-hot encoding)
-no_classes = len(np.unique(y_train))
-Y_train = to_categorical(y_train, no_classes)
-Y_test = to_categorical(y_test, no_classes)
 
-# Build the model
-model = Sequential()
-model.add(Dense(512, input_shape=(960 * 480,)))  # Input shape adjusted for flattened 28x28 grayscale images
-model.add(Activation('relu'))
-model.add(Dropout(0.2))
-model.add(Dense(512))
-model.add(Activation('relu'))
-model.add(Dropout(0.2))
-model.add(Dense(no_classes))
-model.add(Activation('softmax'))
+# Initialize the model, loss function, and optimizer
+model = SimpleCNN().to(device)  # Move the model to the GPU/CPU
+criterion = nn.CrossEntropyLoss()  # Cross entropy loss for multi-class classification
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-model.summary()
 
-# Compile the model
-model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+# Plot correct and incorrect predictions
+def plot_images(images, labels, predictions, title):
+    plt.figure(figsize=(10, 5))
+    for i in range(len(images)):
+        plt.subplot(1, len(images), i + 1)
+        imshow(images[i])
+        plt.title(f'Pred: {predictions[i]}, Actual: {labels[i]}')
+        plt.axis('off')
+    plt.suptitle(title)
+    plt.show()
 
-# Train the model
-history = model.fit(X_train, Y_train, batch_size=128, epochs=1, verbose=1)
 
-# Evaluate the model
-score = model.evaluate(X_test, Y_test)
-print('Test accuracy:', score[1])
+# Helper function to display images
+def imshow(img):
+    img = img / 2 + 0.5  # Unnormalize the image
+    npimg = img.cpu().numpy()  # Ensure the tensor is on the CPU before displaying
+    plt.imshow(np.transpose(npimg, (1, 2, 0)))
 
-# Plot accuracy and loss
-fig = plt.figure()
-plt.subplot(2, 1, 1)
-plt.plot(history.history['accuracy'])
-plt.title('Model accuracy')
-plt.ylabel('accuracy')
-plt.xlabel('epoch')
-plt.legend(['train', 'test'], loc='lower right')
 
-plt.subplot(2, 1, 2)
-plt.plot(history.history['loss'])
-plt.title('Model loss')
-plt.ylabel('loss')
-plt.xlabel('epoch')
-plt.legend(['train', 'test'], loc='upper right')
+# Testing function that plots correct and incorrect predictions
+def test_model_with_plots(model, test_loader, device='cpu'):
+    model.eval()  # Set the model to evaluation mode
+    correct_images, incorrect_images = [], []
+    correct_labels, incorrect_labels = [], []
+    correct_preds, incorrect_preds = [], []
 
-plt.tight_layout()
+    with torch.no_grad():  # No need to track gradients for testing
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)  # Move data to the GPU/CPU
+            outputs = model(images)
+            _, predicted = torch.max(outputs, 1)
+            for i in range(len(labels)):
+                if predicted[i] == labels[i] :
+                    correct_images.append(images[i])
+                    correct_labels.append(labels[i].item())
+                    correct_preds.append(predicted[i].item())
+                elif predicted[i] != labels[i] :
+                    incorrect_images.append(images[i])
+                    incorrect_labels.append(labels[i].item())
+                    incorrect_preds.append(predicted[i].item())
 
-# Predictions on test data
-predicted_classes = np.argmax(model.predict(X_test), axis=1)
+    print(f'Accuracy of the model on the test images: {100 * len(correct_images) / len(test_loader.dataset):.2f}%')
 
-correct_indices = np.nonzero(predicted_classes == y_test)[0]
-incorrect_indices = np.nonzero(predicted_classes != y_test)[0]
+    # Plot correct predictions
+    plot_images(correct_images, correct_labels, correct_preds, 'Correct Predictions')
 
-# Visualize correct predictions
-plt.figure()
-for i, correct in enumerate(correct_indices[:9]):
-    plt.subplot(960, 480, i + 1)
-    plt.imshow(X_test[correct].reshape(960, 480), cmap='gray', interpolation='none')
-    plt.title("Predicted {}, Class {}".format(predicted_classes[correct], y_test[correct]))
+    # Plot incorrect predictions
+    plot_images(incorrect_images, incorrect_labels, incorrect_preds, 'Incorrect Predictions')
 
-plt.tight_layout()
+import os
 
-# Visualize incorrect predictions
-plt.figure()
-for i, incorrect in enumerate(incorrect_indices[:9]):
-    plt.subplot(960, 480, i + 1)
-    plt.imshow(X_test[incorrect].reshape(960, 480), cmap='gray', interpolation='none')
-    plt.title("Predicted {}, Class {}".format(predicted_classes[incorrect], y_test[incorrect]))
+# Directory to save model checkpoints
+save_dir = './checkpoints'
+os.makedirs(save_dir, exist_ok=True)
 
-plt.tight_layout()
+# Lists to store loss and accuracy for each epoch
+train_loss_list = []
+test_accuracy_list = []
+
+
+# Modify the training function to save loss, accuracy, and model
+def train_model(model, train_loader, test_loader, criterion, optimizer, num_epochs, device, save_dir):
+    model.train()  # Set the model to training mode
+    for epoch in range(num_epochs):
+        running_loss = 0.0
+
+        # Training loop
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)  # Move data to the GPU/CPU
+            optimizer.zero_grad()  # Zero the gradients
+            outputs = model(images)  # Forward pass
+            loss = criterion(outputs, labels)  # Compute the loss
+            loss.backward()  # Backpropagation
+            optimizer.step()  # Update the weights
+
+            running_loss += loss.item()
+
+        # Average loss for the epoch
+        avg_loss = running_loss / len(train_loader)
+        train_loss_list.append(avg_loss)
+        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {avg_loss:.4f}')
+
+        # Test accuracy at the end of each epoch
+        test_accuracy = test_model(model, test_loader, device)
+        test_accuracy_list.append(test_accuracy)
+
+        # Save model after each epoch
+        checkpoint_path = os.path.join(save_dir, f'model_epoch_{epoch + 1}.pth')
+        torch.save({
+            'epoch': epoch + 1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': avg_loss,
+            'accuracy': test_accuracy
+        }, checkpoint_path)
+
+        print(f'Model saved at {checkpoint_path}')
+
+    return train_loss_list, test_accuracy_list
+
+
+# Modify the test function to return accuracy
+def test_model(model, test_loader, device):
+    model.eval()  # Set the model to evaluation mode
+    correct = 0
+    total = 0
+
+    with torch.no_grad():  # No need to track gradients for testing
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)  # Move data to the GPU/CPU
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    accuracy = 100 * correct / total
+    print(f'Accuracy of the model on the test images: {accuracy:.2f}%')
+    return accuracy
+
+
+# Function to plot the loss and accuracy
+def plot_metrics(train_loss_list, test_accuracy_list):
+    epochs = range(1, len(train_loss_list) + 1)
+
+    # Plot Loss
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, train_loss_list, '-o', label='Training Loss')
+    plt.title('Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    # Plot Accuracy
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs, test_accuracy_list, '-o', label='Test Accuracy')
+    plt.title('Test Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy (%)')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+
+# Train the model and save metrics
+train_loss_list, test_accuracy_list = train_model(model, train_loader, test_loader, criterion, optimizer, num_epochs,
+                                                  device, save_dir)
+
+# Plot loss and accuracy
+plot_metrics(train_loss_list, test_accuracy_list)
+
+# Test the model and plot correct and incorrect predictions
+test_model_with_plots(model, test_loader, device=device)
+
+
